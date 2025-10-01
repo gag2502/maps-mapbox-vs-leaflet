@@ -349,7 +349,7 @@ function App() {
             {/* Exibe informações do último arquivo importado e contagem de polígonos */}
             {lastImportedFile && (
               <InfoChip>
-                Último: {lastImportedFile} | Polígonos: <strong>{polygonCount}</strong>
+                Arquivo: {lastImportedFile} | Polígonos: <strong>{polygonCount}</strong>
               </InfoChip>
             )}
           </Toolbar>

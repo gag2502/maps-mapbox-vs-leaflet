@@ -1,4 +1,3 @@
-
 import { forwardRef, useEffect, useImperativeHandle, useRef, type Ref } from 'react';
 
 
@@ -84,6 +83,18 @@ export type MapboxMapHandle = {
   exitFullscreen: () => void; // sai do fullscreen
   /** Exclui o(s) desenho(s) selecionado(s) */
   deleteSelected: () => void; // apaga desenhos selecionados
+  /** Muda a cor de preenchimento (hex) e opacidade (0-1) dos polígonos selecionados */
+  changeSelectedFill?: (color: string, opacity?: number) => void;
+  /** Muda a cor da borda (hex) e espessura (px) dos polígonos selecionados */
+  changeSelectedStroke?: (color: string, width?: number) => void;
+  /** Aplica cor de preenchimento (hex) e opacidade (0-1) a todos os polígonos */
+  applyFillToAll?: (color: string, opacity?: number) => void;
+  /** Aplica cor da borda (hex) e espessura (px) a todos os polígonos */
+  applyStrokeToAll?: (color: string, width?: number) => void;
+  /** Adiciona texto no centro dos polígonos selecionados */
+  addTextToSelected?: (text: string) => void;
+  /** Remove texto dos polígonos selecionados */
+  removeTextFromSelected?: () => void;
 };
 
 
@@ -159,15 +170,11 @@ const MapboxMap = forwardRef(function MapboxMap(
   function getDrawTheme(fill: string) {
     // Percorre todos os estilos do tema base do MapboxDraw
     return drawTheme.map(style => {
-      // Se o estilo corresponde ao preenchimento de polígono inativo,
-      // substitui a cor de preenchimento pelo valor fornecido
-      if (style.id === 'gl-draw-polygon-fill-inactive') {
-        return { ...style, paint: { ...style.paint, 'fill-color': fill } };
-      }
-      // Se o estilo corresponde ao preenchimento de polígono ativo (selecionado),
-      // também substitui a cor de preenchimento
-      if (style.id === 'gl-draw-polygon-fill-active') {
-        return { ...style, paint: { ...style.paint, 'fill-color': fill } };
+      // If the style id matches any common MapboxDraw polygon fill layer
+      // (gl-draw-polygon-fill, gl-draw-polygon-fill-active, gl-draw-polygon-fill-inactive)
+      // replace the fill-color and fill-opacity paint properties so feature props are honored.
+      if (typeof style.id === 'string' && style.id.indexOf('gl-draw-polygon-fill') !== -1) {
+        return { ...style, paint: { ...style.paint, 'fill-color': ['coalesce', ['get', 'fillColor'], fill], 'fill-opacity': ['coalesce', ['get', 'fillOpacity'], (style.paint && style.paint['fill-opacity']) || 0.2] } };
       }
       // Para os demais estilos, retorna sem alterações
       return style;
@@ -216,11 +223,8 @@ const MapboxMap = forwardRef(function MapboxMap(
     function getDrawTheme(fill: string) {
       // Copia o tema e troca a cor de fill dos polígonos
       return drawTheme.map(style => {
-        if (style.id === 'gl-draw-polygon-fill-inactive') {
-          return { ...style, paint: { ...style.paint, 'fill-color': fill } };
-        }
-        if (style.id === 'gl-draw-polygon-fill-active') {
-          return { ...style, paint: { ...style.paint, 'fill-color': fill } };
+        if (typeof style.id === 'string' && style.id.indexOf('gl-draw-polygon-fill') !== -1) {
+          return { ...style, paint: { ...style.paint, 'fill-color': ['coalesce', ['get', 'fillColor'], fill], 'fill-opacity': ['coalesce', ['get', 'fillOpacity'], (style.paint && style.paint['fill-opacity']) || 0.2] } };
         }
         return style;
       });
@@ -253,6 +257,12 @@ const MapboxMap = forwardRef(function MapboxMap(
           const data = draw.getAll();
           // Dispara o callback de mudança, se fornecido via props
           onDrawChangeRef.current?.(data);
+          // Update custom colored layer when draw data changes (this also handles coordinate labels)
+          try {
+            updateCustomColoredLayer(map, data.features);
+          } catch (e) {
+            // ignore custom layer errors to not break main flow
+          }
         };
 
         // Função para tratar erros do mapa (ex: falha ao carregar tiles)
@@ -271,6 +281,28 @@ const MapboxMap = forwardRef(function MapboxMap(
         map.on('draw.update', emitDrawChange);
         map.on('draw.delete', emitDrawChange);
 
+        // Quando um novo polígono é criado, força propriedades padrão de preenchimento
+        map.on('draw.create', (e: any) => {
+          try {
+            const created = e.features ?? (e.feature ? [e.feature] : []);
+            (created || []).forEach((f: any) => {
+              // Se não existir, aplica cor branca semi-transparente como padrão
+              if (!f.properties) f.properties = {};
+              if (typeof f.properties.fillColor === 'undefined') f.properties.fillColor = '#ffffff';
+              if (typeof f.properties.fillOpacity === 'undefined') f.properties.fillOpacity = 0.2;
+              // Também salva versão RGB para exportação
+              if (typeof f.properties.fillRgb === 'undefined') {
+                // simple hex -> rgb
+                const hex = (f.properties.fillColor || '#ffffff').replace('#','');
+                const r = parseInt(hex.substring(0,2),16) || 255;
+                const g = parseInt(hex.substring(2,4),16) || 255;
+                const b = parseInt(hex.substring(4,6),16) || 255;
+                f.properties.fillRgb = `${r},${g},${b}`;
+              }
+            });
+          } catch (err) { /* ignore */ }
+        });
+
         // Função chamada quando o mapa termina de carregar (evento 'load')
         const handleMapLoad = () => {
           // Se houver dados iniciais, carrega no controle de desenho e ajusta o zoom
@@ -278,6 +310,8 @@ const MapboxMap = forwardRef(function MapboxMap(
           if (data && data.features.length) {
             draw.set(data);
             fitToCollection(map, data);
+            // Adiciona rótulos para todas as coordenadas presentes nos dados iniciais
+            upsertCoordinateLabels(map, data);
           }
 
           // Dispara o callback de mudança para sincronizar estado inicial
@@ -302,6 +336,23 @@ const MapboxMap = forwardRef(function MapboxMap(
 
         // Função de limpeza do useEffect: remove listeners e destrói o mapa ao desmontar o componente
         return () => {
+          // Clean up custom styled layers
+          try {
+            const fillLayerId = 'custom-colored-polygons-layer';
+            const fillSourceId = 'custom-colored-polygons';
+            const strokeLayerId = 'custom-stroked-polygons-layer';
+            const strokeSourceId = 'custom-stroked-polygons';
+            const textLayerId = 'custom-text-labels-layer';
+            const textSourceId = 'custom-text-labels';
+            if (map.getLayer && map.getLayer(fillLayerId)) map.removeLayer(fillLayerId);
+            if (map.getSource && map.getSource(fillSourceId)) map.removeSource(fillSourceId);
+            if (map.getLayer && map.getLayer(strokeLayerId)) map.removeLayer(strokeLayerId);
+            if (map.getSource && map.getSource(strokeSourceId)) map.removeSource(strokeSourceId);
+            if (map.getLayer && map.getLayer(textLayerId)) map.removeLayer(textLayerId);
+            if (map.getSource && map.getSource(textSourceId)) map.removeSource(textSourceId);
+          } catch (e) {
+            // ignore cleanup errors
+          }
           // Remove listeners dos eventos de desenho e erro
           map.off('draw.create', emitDrawChange);
           map.off('error', handleError);
@@ -391,6 +442,8 @@ const MapboxMap = forwardRef(function MapboxMap(
       drawRef.current.set(initialData);
       // Ajusta o mapa para enquadrar todos os desenhos
       fitToCollection(mapRef.current, initialData);
+      // Atualiza/insere rótulos de coordenadas para o novo GeoJSON
+      upsertCoordinateLabels(mapRef.current, initialData);
       // Dispara callback de mudança, se existir
       onDrawChangeRef.current?.(drawRef.current.getAll());
     }
@@ -492,8 +545,34 @@ const MapboxMap = forwardRef(function MapboxMap(
       if (!drawRef.current) {
         return emptyCollection;
       }
-      // Retorna todos os desenhos atuais
-      return drawRef.current.getAll();
+      // Retorna todos os desenhos atuais, garantindo que todas as propriedades customizadas sejam exportadas
+      try {
+        const all = drawRef.current.getAll();
+        all.features = all.features.map((f: any) => {
+          const props = f.properties || {};
+          
+          // Ensure all custom styling properties are preserved for export
+          // Fill properties
+          if (props.fillColor) {
+            if (!props.fillRgb) {
+              const hex = (props.fillColor || '#ffffff').replace('#','');
+              const r = parseInt(hex.substring(0,2),16) || 255;
+              const g = parseInt(hex.substring(2,4),16) || 255;
+              const b = parseInt(hex.substring(4,6),16) || 255;
+              props.fillRgb = `${r},${g},${b}`;
+            }
+          }
+          
+          // Stroke properties - ensure they're preserved
+          // (strokeColor and strokeWidth are already set by changeSelectedStroke)
+          
+          f.properties = props;
+          return f;
+        });
+        return all;
+      } catch (err) {
+        return drawRef.current.getAll();
+      }
     },
     // Carrega um GeoJSON no mapa, substituindo os desenhos atuais. Pode ajustar o zoom automaticamente
     loadGeoJson: (collection, options) => {
@@ -501,11 +580,38 @@ const MapboxMap = forwardRef(function MapboxMap(
       if (!mapRef.current || !drawRef.current) {
         return;
       }
+      
+      // Ensure all features have their custom properties preserved when loading
+      const processedCollection = {
+        ...collection,
+        features: collection.features.map((f: any) => {
+          // Preserve all existing properties including custom styling
+          const props = f.properties || {};
+          return {
+            ...f,
+            properties: props
+          };
+        })
+      };
+      
       // Define os novos desenhos no controle de desenho
-      drawRef.current.set(collection);
+      drawRef.current.set(processedCollection);
       // Se fitBounds não for false, ajusta o mapa para enquadrar os desenhos
       if (options?.fitBounds !== false) {
-        fitToCollection(mapRef.current, collection);
+        fitToCollection(mapRef.current, processedCollection);
+      }
+      // Atualiza/insere rótulos de coordenadas para o GeoJSON carregado
+      try {
+        upsertCoordinateLabels(mapRef.current, processedCollection);
+      } catch (e) {
+        // ignore
+      }
+      // Update custom colored layer to restore styling from imported JSON
+      try {
+        updateCustomColoredLayer(mapRef.current, processedCollection.features);
+        console.log('[MapboxMap] Restored custom styling from imported JSON');
+      } catch (e) {
+        // ignore
       }
       // Dispara callback de mudança, se existir
       onDrawChangeRef.current?.(drawRef.current.getAll());
@@ -519,7 +625,10 @@ const MapboxMap = forwardRef(function MapboxMap(
       // Remove todos os desenhos
       drawRef.current.deleteAll();
       // Dispara callback de mudança, se existir
-      onDrawChangeRef.current?.(drawRef.current.getAll());
+      const data = drawRef.current.getAll();
+      onDrawChangeRef.current?.(data);
+      // Clear custom colored layer (this also handles coordinate labels)
+      try { if (mapRef.current) updateCustomColoredLayer(mapRef.current, []); } catch (e) { /* ignore */ }
     },
     // Exclui o(s) desenho(s) selecionado(s)
     deleteSelected: () => {
@@ -539,10 +648,603 @@ const MapboxMap = forwardRef(function MapboxMap(
           draw.trash();
         }
         // Dispara callback de mudança, se existir
-        onDrawChangeRef.current?.(drawRef.current.getAll());
+        const data = drawRef.current.getAll();
+        onDrawChangeRef.current?.(data);
+        // Update custom colored layer (this also handles coordinate labels)
+        try { if (mapRef.current) updateCustomColoredLayer(mapRef.current, data.features); } catch (e) { /* ignore */ }
+      }
+    },
+    changeSelectedFill: (color: string, opacity?: number) => {
+      console.log('[MapboxMap] changeSelectedFill called', { color, opacity });
+      if (!drawRef.current) {
+        console.log('[MapboxMap] changeSelectedFill: no drawRef');
+        return;
+      }
+      try {
+        const draw: any = drawRef.current as any;
+        const ids: string[] = typeof draw.getSelectedIds === 'function' ? draw.getSelectedIds() : [];
+        console.log('[MapboxMap] selected ids:', ids);
+        if (!Array.isArray(ids) || ids.length === 0) {
+          console.log('[MapboxMap] changeSelectedFill: no selected features');
+          return;
+        }
+        ids.forEach((id) => {
+          // set properties on feature
+          const f = draw.get(id);
+          console.log('[MapboxMap] before feature props for', id, f?.properties);
+          if (!f) {
+            console.log('[MapboxMap] feature not found for id', id);
+            return;
+          }
+          if (!f.properties) f.properties = {};
+          f.properties.fillColor = color;
+          if (typeof opacity === 'number') f.properties.fillOpacity = opacity;
+          const hex = (color || '#ffffff').replace('#','');
+          const r = parseInt(hex.substring(0,2),16) || 255;
+          const g = parseInt(hex.substring(2,4),16) || 255;
+          const b = parseInt(hex.substring(4,6),16) || 255;
+          f.properties.fillRgb = `${r},${g},${b}`;
+
+          // persist properties back to the store
+          if (typeof draw.setFeatureProperty === 'function') {
+            console.log('[MapboxMap] using setFeatureProperty for', id);
+            // set commonly used properties so MapboxDraw triggers change
+            try {
+              draw.setFeatureProperty(id, 'fillColor', f.properties.fillColor);
+              draw.setFeatureProperty(id, 'fillOpacity', f.properties.fillOpacity);
+              draw.setFeatureProperty(id, 'fillRgb', f.properties.fillRgb);
+            } catch (err:any) {
+              console.error('[MapboxMap] error calling setFeatureProperty', err);
+            }
+          } else {
+            console.log('[MapboxMap] setFeatureProperty not available for', id);
+          }
+
+          // Force visual update: replace feature (delete + add)
+          // This is done even when setFeatureProperty exists because some builds
+          // of MapboxDraw don't refresh styles based on feature props.
+          try {
+            console.log('[MapboxMap] forcing replace feature for', id);
+            // ensure feature retains same id when added
+            const toAdd = { ...f, id } as any;
+            draw.delete(id);
+            draw.add(toAdd);
+          } catch (err:any) {
+            console.error('[MapboxMap] error forcing replace feature', err);
+          }
+
+          // read back feature to confirm
+          try {
+            const after = draw.get(id);
+            console.log('[MapboxMap] after feature props for', id, after?.properties);
+          } catch (err:any) {
+            console.error('[MapboxMap] error reading feature after update', err);
+          }
+        });
+        // Reselect the updated features to preserve UI selection
+        try {
+          if (typeof (draw as any).changeMode === 'function') {
+            console.log('[MapboxMap] reselecting features', ids);
+            try {
+              (draw as any).changeMode('simple_select', { featureIds: ids });
+            } catch (err:any) {
+              console.error('[MapboxMap] error reselecting features with changeMode', err);
+            }
+          }
+        } catch (err:any) {
+          console.error('[MapboxMap] error while attempting to reselect features', err);
+        }
+        // emit changes
+        const data = drawRef.current.getAll();
+        console.log('[MapboxMap] emitting draw change, features length:', data.features?.length);
+        onDrawChangeRef.current?.(data);
+
+        // Update custom colored layer to show polygons with their assigned colors
+        try {
+          const map = mapRef.current as mapboxgl.Map | null;
+          if (map) {
+            updateCustomColoredLayer(map, data.features);
+            console.log('[MapboxMap] Successfully updated custom styled layers');
+          } else {
+            console.log('[MapboxMap] No map instance available for custom layer update');
+          }
+        } catch (err: any) {
+          console.error('[MapboxMap] Error updating custom styled layers:', err);
+        }
+      } catch (err:any) {
+        console.error('[MapboxMap] changeSelectedFill caught error', err);
+      }
+    },
+    changeSelectedStroke: (color: string, width?: number) => {
+      console.log('[MapboxMap] changeSelectedStroke called', { color, width });
+      if (!drawRef.current) {
+        console.log('[MapboxMap] changeSelectedStroke: no drawRef');
+        return;
+      }
+      try {
+        const draw: any = drawRef.current as any;
+        const ids: string[] = typeof draw.getSelectedIds === 'function' ? draw.getSelectedIds() : [];
+        console.log('[MapboxMap] selected ids for stroke:', ids);
+        if (!Array.isArray(ids) || ids.length === 0) {
+          console.log('[MapboxMap] changeSelectedStroke: no selected features');
+          return;
+        }
+        ids.forEach((id) => {
+          const f = draw.get(id);
+          console.log('[MapboxMap] before stroke props for', id, f?.properties);
+          if (!f) {
+            console.log('[MapboxMap] feature not found for stroke id', id);
+            return;
+          }
+          if (!f.properties) f.properties = {};
+          f.properties.strokeColor = color;
+          if (typeof width === 'number') f.properties.strokeWidth = width;
+
+          // persist stroke properties
+          if (typeof draw.setFeatureProperty === 'function') {
+            console.log('[MapboxMap] using setFeatureProperty for stroke', id);
+            try {
+              draw.setFeatureProperty(id, 'strokeColor', f.properties.strokeColor);
+              if (typeof width === 'number') draw.setFeatureProperty(id, 'strokeWidth', f.properties.strokeWidth);
+            } catch (err:any) {
+              console.error('[MapboxMap] error calling setFeatureProperty for stroke', err);
+            }
+          }
+
+          // Force visual update
+          try {
+            console.log('[MapboxMap] forcing replace feature for stroke', id);
+            const toAdd = { ...f, id } as any;
+            draw.delete(id);
+            draw.add(toAdd);
+          } catch (err:any) {
+            console.error('[MapboxMap] error forcing replace feature for stroke', err);
+          }
+
+          try {
+            const after = draw.get(id);
+            console.log('[MapboxMap] after stroke props for', id, after?.properties);
+          } catch (err:any) {
+            console.error('[MapboxMap] error reading feature after stroke update', err);
+          }
+        });
+        
+        // Reselect features
+        try {
+          if (typeof (draw as any).changeMode === 'function') {
+            console.log('[MapboxMap] reselecting features after stroke', ids);
+            try {
+              (draw as any).changeMode('simple_select', { featureIds: ids });
+            } catch (err:any) {
+              console.error('[MapboxMap] error reselecting features after stroke', err);
+            }
+          }
+        } catch (err:any) {
+          console.error('[MapboxMap] error while attempting to reselect features after stroke', err);
+        }
+        
+        // emit changes and update custom layers
+        const data = drawRef.current.getAll();
+        console.log('[MapboxMap] emitting draw change after stroke, features length:', data.features?.length);
+        onDrawChangeRef.current?.(data);
+
+        try {
+          const map = mapRef.current as mapboxgl.Map | null;
+          if (map) {
+            updateCustomColoredLayer(map, data.features);
+            console.log('[MapboxMap] Successfully updated custom styled layers after stroke');
+          }
+        } catch (err: any) {
+          console.error('[MapboxMap] Error updating custom styled layers after stroke:', err);
+        }
+      } catch (err:any) {
+        console.error('[MapboxMap] changeSelectedStroke caught error', err);
+      }
+    },
+    applyFillToAll: (color: string, opacity?: number) => {
+      console.log('[MapboxMap] applyFillToAll called', { color, opacity });
+      if (!drawRef.current) {
+        console.log('[MapboxMap] applyFillToAll: no drawRef');
+        return;
+      }
+      try {
+        const draw: any = drawRef.current as any;
+        const data = draw.getAll();
+        const polygonFeatures = data.features.filter((f: any) => 
+          f.geometry && (f.geometry.type === 'Polygon' || f.geometry.type === 'MultiPolygon')
+        );
+        
+        console.log('[MapboxMap] applying fill to', polygonFeatures.length, 'polygons');
+        
+        polygonFeatures.forEach((f: any) => {
+          if (!f.properties) f.properties = {};
+          f.properties.fillColor = color;
+          if (typeof opacity === 'number') f.properties.fillOpacity = opacity;
+          const hex = (color || '#ffffff').replace('#','');
+          const r = parseInt(hex.substring(0,2),16) || 255;
+          const g = parseInt(hex.substring(2,4),16) || 255;
+          const b = parseInt(hex.substring(4,6),16) || 255;
+          f.properties.fillRgb = `${r},${g},${b}`;
+          
+          // Force update
+          try {
+            const toAdd = { ...f, id: f.id } as any;
+            draw.delete(f.id);
+            draw.add(toAdd);
+          } catch (err:any) {
+            console.error('[MapboxMap] error replacing feature in applyFillToAll', err);
+          }
+        });
+        
+        // emit changes and update custom layers
+        const updatedData = drawRef.current.getAll();
+        console.log('[MapboxMap] emitting draw change after applyFillToAll, features length:', updatedData.features?.length);
+        onDrawChangeRef.current?.(updatedData);
+
+        try {
+          const map = mapRef.current as mapboxgl.Map | null;
+          if (map) {
+            updateCustomColoredLayer(map, updatedData.features);
+            console.log('[MapboxMap] Successfully updated custom styled layers after applyFillToAll');
+          }
+        } catch (err: any) {
+          console.error('[MapboxMap] Error updating custom styled layers after applyFillToAll:', err);
+        }
+      } catch (err:any) {
+        console.error('[MapboxMap] applyFillToAll caught error', err);
+      }
+    },
+    applyStrokeToAll: (color: string, width?: number) => {
+      console.log('[MapboxMap] applyStrokeToAll called', { color, width });
+      if (!drawRef.current) {
+        console.log('[MapboxMap] applyStrokeToAll: no drawRef');
+        return;
+      }
+      try {
+        const draw: any = drawRef.current as any;
+        const data = draw.getAll();
+        const polygonFeatures = data.features.filter((f: any) => 
+          f.geometry && (f.geometry.type === 'Polygon' || f.geometry.type === 'MultiPolygon')
+        );
+        
+        console.log('[MapboxMap] applying stroke to', polygonFeatures.length, 'polygons');
+        
+        polygonFeatures.forEach((f: any) => {
+          if (!f.properties) f.properties = {};
+          f.properties.strokeColor = color;
+          if (typeof width === 'number') f.properties.strokeWidth = width;
+          
+          // Force update
+          try {
+            const toAdd = { ...f, id: f.id } as any;
+            draw.delete(f.id);
+            draw.add(toAdd);
+          } catch (err:any) {
+            console.error('[MapboxMap] error replacing feature in applyStrokeToAll', err);
+          }
+        });
+        
+        // emit changes and update custom layers
+        const updatedData = drawRef.current.getAll();
+        console.log('[MapboxMap] emitting draw change after applyStrokeToAll, features length:', updatedData.features?.length);
+        onDrawChangeRef.current?.(updatedData);
+
+        try {
+          const map = mapRef.current as mapboxgl.Map | null;
+          if (map) {
+            updateCustomColoredLayer(map, updatedData.features);
+            console.log('[MapboxMap] Successfully updated custom styled layers after applyStrokeToAll');
+          }
+        } catch (err: any) {
+          console.error('[MapboxMap] Error updating custom styled layers after applyStrokeToAll:', err);
+        }
+      } catch (err:any) {
+        console.error('[MapboxMap] applyStrokeToAll caught error', err);
+      }
+    },
+    addTextToSelected: (text: string) => {
+      console.log('[MapboxMap] addTextToSelected called', { text });
+      if (!drawRef.current) {
+        console.log('[MapboxMap] addTextToSelected: no drawRef');
+        return;
+      }
+      try {
+        const draw: any = drawRef.current as any;
+        const ids: string[] = typeof draw.getSelectedIds === 'function' ? draw.getSelectedIds() : [];
+        console.log('[MapboxMap] selected ids for text:', ids);
+        if (!Array.isArray(ids) || ids.length === 0) {
+          console.log('[MapboxMap] addTextToSelected: no selected features');
+          return;
+        }
+        
+        ids.forEach((id) => {
+          const f = draw.get(id);
+          if (!f) {
+            console.log('[MapboxMap] feature not found for text id', id);
+            return;
+          }
+          if (!f.properties) f.properties = {};
+          f.properties.labelText = text;
+          
+          // Force update
+          try {
+            const toAdd = { ...f, id } as any;
+            draw.delete(id);
+            draw.add(toAdd);
+          } catch (err:any) {
+            console.error('[MapboxMap] error forcing replace feature for text', err);
+          }
+        });
+        
+        // emit changes and update custom layers
+        const data = drawRef.current.getAll();
+        console.log('[MapboxMap] emitting draw change after addText, features length:', data.features?.length);
+        onDrawChangeRef.current?.(data);
+
+        try {
+          const map = mapRef.current as mapboxgl.Map | null;
+          if (map) {
+            updateCustomColoredLayer(map, data.features);
+            console.log('[MapboxMap] Successfully updated custom layers after addText');
+          }
+        } catch (err: any) {
+          console.error('[MapboxMap] Error updating custom layers after addText:', err);
+        }
+      } catch (err:any) {
+        console.error('[MapboxMap] addTextToSelected caught error', err);
+      }
+    },
+    removeTextFromSelected: () => {
+      console.log('[MapboxMap] removeTextFromSelected called');
+      if (!drawRef.current) {
+        console.log('[MapboxMap] removeTextFromSelected: no drawRef');
+        return;
+      }
+      try {
+        const draw: any = drawRef.current as any;
+        const ids: string[] = typeof draw.getSelectedIds === 'function' ? draw.getSelectedIds() : [];
+        console.log('[MapboxMap] selected ids for text removal:', ids);
+        if (!Array.isArray(ids) || ids.length === 0) {
+          console.log('[MapboxMap] removeTextFromSelected: no selected features');
+          return;
+        }
+        
+        ids.forEach((id) => {
+          const f = draw.get(id);
+          if (!f) {
+            console.log('[MapboxMap] feature not found for text removal id', id);
+            return;
+          }
+          if (f.properties) {
+            delete f.properties.labelText;
+          }
+          
+          // Force update
+          try {
+            const toAdd = { ...f, id } as any;
+            draw.delete(id);
+            draw.add(toAdd);
+          } catch (err:any) {
+            console.error('[MapboxMap] error forcing replace feature for text removal', err);
+          }
+        });
+        
+        // emit changes and update custom layers
+        const data = drawRef.current.getAll();
+        console.log('[MapboxMap] emitting draw change after removeText, features length:', data.features?.length);
+        onDrawChangeRef.current?.(data);
+
+        try {
+          const map = mapRef.current as mapboxgl.Map | null;
+          if (map) {
+            updateCustomColoredLayer(map, data.features);
+            console.log('[MapboxMap] Successfully updated custom layers after removeText');
+          }
+        } catch (err: any) {
+          console.error('[MapboxMap] Error updating custom layers after removeText:', err);
+        }
+      } catch (err:any) {
+        console.error('[MapboxMap] removeTextFromSelected caught error', err);
       }
     },
   }));
+
+  // ===============================
+  // Custom colored polygons layer management
+  // ===============================
+  
+  // Create or update custom layers to display polygons with their assigned colors and strokes
+  const updateCustomColoredLayer = (map: mapboxgl.Map, features: Feature[]) => {
+    const fillSourceId = 'custom-colored-polygons';
+    const fillLayerId = 'custom-colored-polygons-layer';
+    const strokeSourceId = 'custom-stroked-polygons';
+    const strokeLayerId = 'custom-stroked-polygons-layer';
+    
+    try {
+      // Filter polygon features that have custom fill colors
+      const coloredFeatures = features.filter(f => 
+        f?.properties?.fillColor && 
+        f.geometry && 
+        (f.geometry.type === 'Polygon' || f.geometry.type === 'MultiPolygon')
+      );
+      
+      // Filter polygon features that have custom stroke properties
+      const strokedFeatures = features.filter(f => 
+        (f?.properties?.strokeColor || f?.properties?.strokeWidth) && 
+        f.geometry && 
+        (f.geometry.type === 'Polygon' || f.geometry.type === 'MultiPolygon')
+      );
+      
+      // Handle fill layer
+      if (map.getLayer(fillLayerId)) map.removeLayer(fillLayerId);
+      if (map.getSource(fillSourceId)) map.removeSource(fillSourceId);
+      
+      if (coloredFeatures.length > 0) {
+        const fillFeatureCollection: FeatureCollection = {
+          type: 'FeatureCollection',
+          features: coloredFeatures
+        };
+        
+        map.addSource(fillSourceId, {
+          type: 'geojson',
+          data: fillFeatureCollection
+        });
+        
+        map.addLayer({
+          id: fillLayerId,
+          type: 'fill',
+          source: fillSourceId,
+          paint: {
+            'fill-color': ['coalesce', ['get', 'fillColor'], '#ffffff'],
+            'fill-opacity': ['coalesce', ['get', 'fillOpacity'], 0.2]
+          }
+        });
+        
+        console.log('[MapboxMap] Updated custom fill layer with', coloredFeatures.length, 'features');
+      }
+      
+      // Handle stroke layer
+      if (map.getLayer(strokeLayerId)) map.removeLayer(strokeLayerId);
+      if (map.getSource(strokeSourceId)) map.removeSource(strokeSourceId);
+      
+      if (strokedFeatures.length > 0) {
+        const strokeFeatureCollection: FeatureCollection = {
+          type: 'FeatureCollection',
+          features: strokedFeatures
+        };
+        
+        map.addSource(strokeSourceId, {
+          type: 'geojson',
+          data: strokeFeatureCollection
+        });
+        
+        map.addLayer({
+          id: strokeLayerId,
+          type: 'line',
+          source: strokeSourceId,
+          paint: {
+            'line-color': ['coalesce', ['get', 'strokeColor'], '#ffffff'],
+            'line-width': ['coalesce', ['get', 'strokeWidth'], 2],
+            'line-opacity': 1
+          },
+          layout: {
+            'line-cap': 'round',
+            'line-join': 'round'
+          }
+        });
+        
+        console.log('[MapboxMap] Updated custom stroke layer with', strokedFeatures.length, 'features');
+      }
+      
+      // Ensure coordinate labels are present before adding text labels
+      // This guarantees text labels added below will be placed above the polygon layers
+      try {
+        const allData = { type: 'FeatureCollection', features } as FeatureCollection;
+        upsertCoordinateLabels(map, allData);
+        console.log('[MapboxMap] Upserted coordinate labels before adding text labels');
+      } catch (err: any) {
+        console.error('[MapboxMap] Error upserting coordinate labels before text labels:', err);
+      }
+      
+      if (coloredFeatures.length === 0 && strokedFeatures.length === 0) {
+        console.log('[MapboxMap] No custom styled features to display');
+      }
+      
+      // Handle text labels layer
+      const textSourceId = 'custom-text-labels';
+      const textLayerId = 'custom-text-labels-layer';
+      
+      try {
+        // Filter polygon features that have custom text
+        const textFeatures = features.filter(f => 
+          f?.properties?.labelText && 
+          f.geometry && 
+          (f.geometry.type === 'Polygon' || f.geometry.type === 'MultiPolygon')
+        ).map(f => {
+          // Calculate centroid for text placement
+          let centroid: [number, number] | null = null;
+          
+          if (f.geometry.type === 'Polygon') {
+            centroid = calculatePolygonCentroid(f.geometry.coordinates as number[][][]);
+          } else if (f.geometry.type === 'MultiPolygon') {
+            // For MultiPolygon, use the centroid of the first polygon
+            const firstPolygon = (f.geometry.coordinates as number[][][][])[0];
+            if (firstPolygon) {
+              centroid = calculatePolygonCentroid(firstPolygon);
+            }
+          }
+          
+          if (!centroid) return null;
+          
+          return {
+            type: 'Feature' as const,
+            id: `text-${f.id}`,
+            properties: {
+              labelText: f.properties.labelText,
+              originalId: f.id
+            },
+            geometry: {
+              type: 'Point' as const,
+              coordinates: centroid
+            }
+          };
+        }).filter(Boolean);
+        
+        // Remove existing text layer
+        if (map.getLayer(textLayerId)) map.removeLayer(textLayerId);
+        if (map.getSource(textSourceId)) map.removeSource(textSourceId);
+        
+        if (textFeatures.length > 0) {
+          const textFeatureCollection: FeatureCollection = {
+            type: 'FeatureCollection',
+            features: textFeatures as any[]
+          };
+          
+          map.addSource(textSourceId, {
+            type: 'geojson',
+            data: textFeatureCollection
+          });
+          
+          map.addLayer({
+            id: textLayerId,
+            type: 'symbol',
+            source: textSourceId,
+            layout: {
+              'text-field': ['get', 'labelText'],
+              'text-size': 14,
+              'text-anchor': 'center',
+              'text-allow-overlap': true,
+              'text-ignore-placement': true
+            },
+            paint: {
+              'text-color': '#000000',
+              'text-halo-color': '#ffffff',
+              'text-halo-width': 2,
+              'text-halo-blur': 1
+            }
+          });
+          // Ensure the text layer is above other layers (move to top)
+          try {
+            if (map.moveLayer) {
+              // calling moveLayer without a second argument moves the layer to the top
+              map.moveLayer(textLayerId);
+              console.log('[MapboxMap] Moved text layer to top');
+            }
+          } catch (err: any) {
+            console.warn('[MapboxMap] Could not move text layer to top:', err);
+          }
+          
+          console.log('[MapboxMap] Updated custom text layer with', textFeatures.length, 'labels');
+        }
+      } catch (err: any) {
+        console.error('[MapboxMap] Error updating text labels:', err);
+      }
+      
+      // (Coordinate labels already upserted before text layer creation)
+    } catch (err: any) {
+      console.error('[MapboxMap] Error updating custom styled layers:', err);
+    }
+  };
 
   return <StyledMapContainer ref={containerRef} />;
 }
@@ -687,6 +1389,32 @@ function getCoordinateFromGeometry(geometry: Geometry): [number, number] | null 
 }
 
 
+// Calcula o centroide (ponto central) de um polígono
+function calculatePolygonCentroid(coordinates: number[][][]): [number, number] | null {
+  if (!coordinates || coordinates.length === 0) return null;
+  
+  // Pega apenas o anel externo (primeiro array)
+  const ring = coordinates[0];
+  if (!ring || ring.length === 0) return null;
+  
+  let totalX = 0;
+  let totalY = 0;
+  let pointCount = 0;
+  
+  // Calcula a média das coordenadas (centroide simples)
+  for (const point of ring) {
+    if (point && point.length >= 2) {
+      totalX += point[0]; // longitude
+      totalY += point[1]; // latitude
+      pointCount++;
+    }
+  }
+  
+  if (pointCount === 0) return null;
+  
+  return [totalX / pointCount, totalY / pointCount];
+}
+
 // Busca recursivamente a primeira coordenada [lng, lat] em um array de coordenadas aninhado
 // Busca recursivamente a primeira coordenada [lng, lat] em um array de coordenadas aninhado
 function findCoordinate(value: unknown): [number, number] | null {
@@ -715,3 +1443,234 @@ function findCoordinate(value: unknown): [number, number] | null {
 }
 
 export default MapboxMap;
+
+// ===============================
+// Helpers: extrair vértices (extremidades) e gerenciar camada de rótulos
+// ===============================
+
+/**
+ * Extrai todos os vértices (extremidades) [lng, lat] de um FeatureCollection.
+ * Para polígonos, inclui todos os vértices dos anéis; para linhas, todos os pontos da linha.
+ */
+type VertEntry = { coord: [number, number]; angle: number };
+
+function extractVertexEntriesFromFeatureCollection(collection: FeatureCollection): VertEntry[] {
+  const entries: VertEntry[] = [];
+  for (const feature of collection.features) {
+    if (!feature.geometry) continue;
+    collectVertexEntriesFromGeometry(feature.geometry, entries);
+  }
+  // deduplicate by rounded coords (6 decimals)
+  const seen = new Set<string>();
+  const unique: VertEntry[] = [];
+  for (const e of entries) {
+    const key = `${e.coord[0].toFixed(6)}|${e.coord[1].toFixed(6)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(e);
+  }
+  return unique;
+}
+
+function collectVertexEntriesFromGeometry(geometry: Geometry, out: VertEntry[]) {
+  switch (geometry.type) {
+    case 'Point': {
+      const p = geometry.coordinates as [number, number];
+      out.push({ coord: p, angle: 0 });
+      break;
+    }
+    case 'MultiPoint':
+    case 'LineString': {
+      const coords = geometry.coordinates as [number, number][];
+      for (let i = 0; i < coords.length; i++) {
+        const prev = i > 0 ? coords[i - 1] : null;
+        const next = i + 1 < coords.length ? coords[i + 1] : null;
+        const angle = computeVertexAngle(coords[i], prev, next);
+        out.push({ coord: coords[i], angle });
+      }
+      break;
+    }
+    case 'MultiLineString': {
+      for (const line of geometry.coordinates as [number, number][][]) {
+        for (let i = 0; i < line.length; i++) {
+          const prev = i > 0 ? line[i - 1] : null;
+          const next = i + 1 < line.length ? line[i + 1] : null;
+          const angle = computeVertexAngle(line[i], prev, next);
+          out.push({ coord: line[i], angle });
+        }
+      }
+      break;
+    }
+    case 'Polygon': {
+      // Only include outer ring (index 0) to ignore holes
+      const rings = geometry.coordinates as [number, number][][];
+      if (rings.length > 0) {
+        const ring = rings[0];
+        for (let i = 0; i < ring.length; i++) {
+          const prev = i > 0 ? ring[i - 1] : ring[ring.length - 2] ?? ring[ring.length - 1];
+          const next = ring[(i + 1) % ring.length];
+          const angle = computeVertexAngle(ring[i], prev, next);
+          out.push({ coord: ring[i], angle });
+        }
+      }
+      break;
+    }
+    case 'MultiPolygon': {
+      for (const polygon of geometry.coordinates as [number, number][][][]) {
+        if (polygon.length === 0) continue;
+        const ring = polygon[0];
+        for (let i = 0; i < ring.length; i++) {
+          const prev = i > 0 ? ring[i - 1] : ring[ring.length - 2] ?? ring[ring.length - 1];
+          const next = ring[(i + 1) % ring.length];
+          const angle = computeVertexAngle(ring[i], prev, next);
+          out.push({ coord: ring[i], angle });
+        }
+      }
+      break;
+    }
+    case 'GeometryCollection':
+      if (geometry.geometries) for (const g of geometry.geometries) collectVertexEntriesFromGeometry(g, out);
+      break;
+    default:
+      break;
+  }
+}
+
+function computeVertexAngle(curr: [number, number], prev: [number, number] | null, next: [number, number] | null): number {
+  // Prefer vector to next; if not available, use vector from prev to curr
+  let dx = 0;
+  let dy = 0;
+  if (next) {
+    dx = next[0] - curr[0];
+    dy = next[1] - curr[1];
+  } else if (prev) {
+    dx = curr[0] - prev[0];
+    dy = curr[1] - prev[1];
+  }
+  const rad = Math.atan2(dy, dx);
+  const deg = (rad * 180) / Math.PI;
+  return deg;
+}
+
+function buildPointFeaturesFromVertices(entries: VertEntry[]): FeatureCollection {
+  return {
+    type: 'FeatureCollection',
+    features: entries.map((e, idx) => ({
+      type: 'Feature',
+      id: `vertex-label-${idx}`,
+      properties: { label: `${e.coord[1].toFixed(6)}, ${e.coord[0].toFixed(6)}`, angle: e.angle },
+      geometry: { type: 'Point', coordinates: e.coord }
+    }))
+  };
+}
+
+/**
+ * Cria ou atualiza uma fonte e camada de símbolo com rótulos posicionados em cada vértice (extremidade).
+ * Os rótulos são forçados a aparecer (sobreposição) e escalam com o zoom via expressão.
+ */
+function upsertCoordinateLabels(map: mapboxgl.Map, collection: FeatureCollection) {
+  const entries = extractVertexEntriesFromFeatureCollection(collection);
+
+  const prefix = 'coord-labels';
+
+  // Remove camadas e fontes antigas que usam o prefixo
+  const oldLayerIds = [0,1,2,3].map(i => `${prefix}-layer-${i}`);
+  const oldSourceIds = [0,1,2,3].map(i => `${prefix}-source-${i}`);
+  for (const lid of oldLayerIds) {
+    if (map.getLayer(lid)) map.removeLayer(lid);
+  }
+  for (const sid of oldSourceIds) {
+    if (map.getSource(sid)) map.removeSource(sid);
+  }
+
+  if (!entries.length) return;
+
+  // Tiers: cada tier tem um minzoom e tamanho de célula em graus para amostragem espacial
+  // as células maiores no zoom menor garantem apenas 1 label por região ampla
+  const tiers = [
+    { id: 0, minzoom: 0, cellDeg: 0.06, textSizeRange: [8,10] },   // muito grosseiro
+    { id: 1, minzoom: 8, cellDeg: 0.02, textSizeRange: [9,12] },   // médio
+    { id: 2, minzoom: 12, cellDeg: 0.005, textSizeRange: [11,14] },// fino
+    { id: 3, minzoom: 14, cellDeg: 0.0015, textSizeRange: [13,16] },// quase todos
+  ];
+
+  function sampleByGrid(entries: VertEntry[], cellDeg: number) {
+    const seen = new Map<string, VertEntry>();
+    for (const e of entries) {
+      // chave da célula: floor(lon/cellDeg)|floor(lat/cellDeg)
+      const kx = Math.floor(e.coord[0] / cellDeg);
+      const ky = Math.floor(e.coord[1] / cellDeg);
+      const key = `${kx}|${ky}`;
+      if (!seen.has(key)) seen.set(key, e);
+      else {
+        // opcional: escolher o vértice mais central na célula (mantém o primeiro por simplicidade)
+      }
+    }
+    return Array.from(seen.values());
+  }
+
+  // Para cada tier, cria uma fonte com pontos amostrados espacialmente e uma camada com minzoom
+  for (const tier of tiers) {
+    const sampled = sampleByGrid(entries, tier.cellDeg);
+    if (!sampled.length) continue;
+
+    const fc = buildPointFeaturesFromVertices(sampled);
+    const sourceId = `${prefix}-source-${tier.id}`;
+    const layerId = `${prefix}-layer-${tier.id}`;
+
+    map.addSource(sourceId, { type: 'geojson', data: fc as any });
+
+    // Position coordinate labels as the topmost layer to ensure they appear above all custom styled layers
+    let beforeLayer = undefined;
+    try {
+      // We don't set beforeLayer, which will add coordinate labels as the topmost layer
+      // This ensures they appear above all custom fill and stroke layers
+    } catch (e) {
+      // ignore layer ordering errors
+    }
+
+    map.addLayer({
+      id: layerId,
+      type: 'symbol',
+      source: sourceId,
+      minzoom: tier.minzoom,
+      layout: {
+        'text-field': ['get', 'label'],
+        // escalonamento simples por zoom; camada já controla quando aparece
+        'text-size': ['interpolate', ['linear'], ['zoom'], tier.minzoom, tier.textSizeRange[0], tier.minzoom + 4, tier.textSizeRange[1]],
+        'text-offset': [0, 1.0],
+        'text-anchor': 'top',
+        'text-rotate': ['get', 'angle'],
+        // lower-density tiers should avoid overlap; only the closest tier allows overlap
+        'text-allow-overlap': tier.id >= 3 ? true : false,
+        'text-ignore-placement': tier.id >= 3 ? true : false
+      },
+      paint: {
+        'text-color': '#0f172a',
+        'text-halo-color': '#ffffff',
+        'text-halo-width': 2,
+        'text-halo-blur': 1
+      }
+    }, beforeLayer);
+  }
+
+  // After all coordinate label layers are added, ensure custom layers are below them
+  // by moving custom layers below the lowest tier coordinate layer
+  try {
+    const customLayerIds = ['custom-colored-polygons-layer', 'custom-stroked-polygons-layer'];
+    const firstCoordLayer = `${prefix}-layer-0`;
+    
+    for (const customLayerId of customLayerIds) {
+      if (map.getLayer(customLayerId) && map.getLayer(firstCoordLayer)) {
+        try {
+          map.moveLayer(customLayerId, firstCoordLayer);
+          console.log(`[MapboxMap] Moved ${customLayerId} below coordinate layers`);
+        } catch (e) {
+          // Ignore if layer movement fails
+        }
+      }
+    }
+  } catch (e) {
+    // Ignore layer reordering errors
+  }
+}

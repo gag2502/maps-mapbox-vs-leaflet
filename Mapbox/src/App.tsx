@@ -61,7 +61,11 @@ const InfoChip = styled.div`
   font-size: 12px;
   color: #475569;
   max-width: 60vw;
-  align-self: flex-end; /* garante alinhamento à direita */
+  /* posiciona no canto inferior direito do mapa (1px da borda direita) */
+  position: absolute;
+  right: 3px;
+  bottom: 24px;
+  z-index: 22;
 `;
 
 const MapWrapper = styled.section`
@@ -160,6 +164,139 @@ function App() {
     }
   };
   const handleClear = () => mapRef.current?.deleteSelected?.();
+
+  // Estado para o seletor de cor do polígono
+  const [colorPickerOpen, setColorPickerOpen] = useState(false);
+  const [selectedColor, setSelectedColor] = useState('#ffffff');
+  const [selectedOpacity, setSelectedOpacity] = useState(0.2);
+
+  // Estado para o seletor de borda do polígono
+  const [strokePickerOpen, setStrokePickerOpen] = useState(false);
+  const [selectedStrokeColor, setSelectedStrokeColor] = useState('#ffffff');
+  const [selectedStrokeWidth, setSelectedStrokeWidth] = useState(2);
+
+  // Estado para adicionar texto ao polígono
+  const [textInput, setTextInput] = useState('');
+  const [textPickerOpen, setTextPickerOpen] = useState(false);
+
+  const applyColorToSelected = () => {
+    console.log('[UI] Aplicar cor clicado', selectedColor, selectedOpacity);
+    const changeFn = mapRef.current?.changeSelectedFill;
+    if (typeof changeFn !== 'function') {
+      alert('Ação indisponível: a API do mapa não implementou changeSelectedFill.');
+      return setColorPickerOpen(false);
+    }
+    try {
+      changeFn(selectedColor, selectedOpacity);
+      // small verification: check if any feature now has the color
+      const data = mapRef.current?.getDrawData?.();
+      const has = data?.features?.some((f: any) => f?.properties?.fillColor === selectedColor);
+      if (!has) {
+        // provavelmente não havia seleção
+        alert('Nenhum polígono selecionado ou atualização não aplicada. Selecione um polígono antes de trocar a cor.');
+      }
+    } catch (err) {
+      console.error('Erro ao aplicar cor:', err);
+      alert('Erro ao aplicar cor. Veja o console para mais detalhes.');
+    }
+    setColorPickerOpen(false);
+  };
+
+  const applyColorToAll = () => {
+    console.log('[UI] Aplicar cor a todos clicado', selectedColor, selectedOpacity);
+    const applyFn = mapRef.current?.applyFillToAll;
+    if (typeof applyFn !== 'function') {
+      alert('Ação indisponível: a API do mapa não implementou applyFillToAll.');
+      return setColorPickerOpen(false);
+    }
+    try {
+      applyFn(selectedColor, selectedOpacity);
+    } catch (err) {
+      console.error('Erro ao aplicar cor a todos:', err);
+      alert('Erro ao aplicar cor a todos. Veja o console para mais detalhes.');
+    }
+    setColorPickerOpen(false);
+  };
+
+  const applyStrokeToSelected = () => {
+    console.log('[UI] Aplicar borda clicado', selectedStrokeColor, selectedStrokeWidth);
+    const strokeFn = mapRef.current?.changeSelectedStroke;
+    if (typeof strokeFn !== 'function') {
+      alert('Ação indisponível: a API do mapa não implementou changeSelectedStroke.');
+      return setStrokePickerOpen(false);
+    }
+    try {
+      strokeFn(selectedStrokeColor, selectedStrokeWidth);
+      // small verification: check if any feature now has the stroke
+      const data = mapRef.current?.getDrawData?.();
+      const has = data?.features?.some((f: any) => f?.properties?.strokeColor === selectedStrokeColor);
+      if (!has) {
+        alert('Nenhum polígono selecionado ou atualização não aplicada. Selecione um polígono antes de trocar a borda.');
+      }
+    } catch (err) {
+      console.error('Erro ao aplicar borda:', err);
+      alert('Erro ao aplicar borda. Veja o console para mais detalhes.');
+    }
+    setStrokePickerOpen(false);
+  };
+
+  const applyStrokeToAll = () => {
+    console.log('[UI] Aplicar borda a todos clicado', selectedStrokeColor, selectedStrokeWidth);
+    const applyFn = mapRef.current?.applyStrokeToAll;
+    if (typeof applyFn !== 'function') {
+      alert('Ação indisponível: a API do mapa não implementou applyStrokeToAll.');
+      return setStrokePickerOpen(false);
+    }
+    try {
+      applyFn(selectedStrokeColor, selectedStrokeWidth);
+    } catch (err) {
+      console.error('Erro ao aplicar borda a todos:', err);
+      alert('Erro ao aplicar borda a todos. Veja o console para mais detalhes.');
+    }
+    setStrokePickerOpen(false);
+  };
+
+  const addTextToSelected = () => {
+    console.log('[UI] Adicionar texto clicado', textInput);
+    const textFn = mapRef.current?.addTextToSelected;
+    if (typeof textFn !== 'function') {
+      alert('Ação indisponível: a API do mapa não implementou addTextToSelected.');
+      return setTextPickerOpen(false);
+    }
+    if (!textInput.trim()) {
+      alert('Digite um texto para adicionar ao polígono.');
+      return;
+    }
+    try {
+      textFn(textInput.trim());
+      setTextInput(''); // Limpa o input após adicionar
+      const data = mapRef.current?.getDrawData?.();
+      const hasText = data?.features?.some((f: any) => f?.properties?.labelText);
+      if (!hasText) {
+        alert('Nenhum polígono selecionado. Selecione um polígono antes de adicionar texto.');
+      }
+    } catch (err) {
+      console.error('Erro ao adicionar texto:', err);
+      alert('Erro ao adicionar texto. Veja o console para mais detalhes.');
+    }
+    setTextPickerOpen(false);
+  };
+
+  const removeTextFromSelected = () => {
+    console.log('[UI] Remover texto clicado');
+    const removeFn = mapRef.current?.removeTextFromSelected;
+    if (typeof removeFn !== 'function') {
+      alert('Ação indisponível: a API do mapa não implementou removeTextFromSelected.');
+      return setTextPickerOpen(false);
+    }
+    try {
+      removeFn();
+    } catch (err) {
+      console.error('Erro ao remover texto:', err);
+      alert('Erro ao remover texto. Veja o console para mais detalhes.');
+    }
+    setTextPickerOpen(false);
+  };
 
   const exportGeoJson = () => {
     const data = mapRef.current?.getDrawData?.();
@@ -305,12 +442,146 @@ function App() {
                 </svg>
               </IconButton>
             </ToolGroup>
-            {lastImportedFile && (
-              <InfoChip>
-                Último: {lastImportedFile} | Polígonos: <strong>{polygonCount}</strong>
-              </InfoChip>
-            )}
+            <ToolGroup style={{ overflow: 'visible' }}>
+              <div style={{ position: 'relative' }}>
+                <IconButton aria-label="Trocar cor" title="Trocar cor do polígono" onClick={() => { console.log('[UI] Abrir color picker'); setColorPickerOpen(v => !v); }} style={{ background: 'transparent', border: 'none', boxShadow: 'none', width: 32, height: 32, padding: 6 }}>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="20" height="20">
+                    <path d="M2 22l4-1 11-11a2.5 2.5 0 0 0 0-3.5l-1.5-1.5a2.5 2.5 0 0 0-3.5 0L2 16v6z" />
+                    <path d="M14 7l3 3" />
+                  </svg>
+                </IconButton>
+                <IconButton aria-label="Trocar borda" title="Trocar borda do polígono" onClick={() => { console.log('[UI] Abrir stroke picker'); setStrokePickerOpen(v => !v); }} style={{ background: 'transparent', border: 'none', boxShadow: 'none', width: 32, height: 32, padding: 6 }}>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="20" height="20">
+                    <rect x="3" y="3" width="18" height="18" rx="2" ry="2" fill="none" strokeWidth="3"/>
+                  </svg>
+                </IconButton>
+                <IconButton aria-label="Adicionar texto" title="Adicionar texto ao polígono" onClick={() => { console.log('[UI] Abrir text picker'); setTextPickerOpen(v => !v); }} style={{ background: 'transparent', border: 'none', boxShadow: 'none', width: 32, height: 32, padding: 6 }}>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="20" height="20">
+                    <path d="M4 7V4h16v3"/>
+                    <path d="M9 20h6"/>
+                    <path d="M12 4v16"/>
+                  </svg>
+                </IconButton>
+                {colorPickerOpen && (
+                  <div style={{ position: 'absolute', right: 0, marginTop: 8, background: '#fff', border: '1px solid #e2e8f0', padding: 8, borderRadius: 8, boxShadow: '0 6px 24px rgba(15,23,42,0.12)', zIndex: 40 }}>
+                    {/* Preview mostrando a cor+opacidade selecionada (funciona mesmo sem seleção de polígono) */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                      <div style={{ width: 40, height: 24, borderRadius: 4, border: '1px solid #e6e6e6', background: selectedColor, opacity: selectedOpacity }} aria-hidden />
+                      <div style={{ fontSize: 12, color: '#475569' }}>{selectedColor} • Opacidade: {Math.round(selectedOpacity * 100)}%</div>
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                      <input type="color" value={selectedColor} onChange={(e) => setSelectedColor(e.target.value)} />
+                      <label style={{ fontSize: 12, color: '#475569' }}>Opacidade</label>
+                      <input type="range" min={0} max={1} step={0.05} value={selectedOpacity} onChange={(e) => setSelectedOpacity(Number(e.target.value))} />
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 8 }}>
+                      <button onClick={applyColorToAll} style={{ padding: '6px 10px', background: '#059669', color: '#fff', border: 'none', borderRadius: 6 }}>Todos</button>
+                      <button onClick={() => setColorPickerOpen(false)} style={{ padding: '6px 10px' }}>Cancelar</button>
+                      <button onClick={applyColorToSelected} style={{ padding: '6px 10px', background: '#0ea5e9', color: '#fff', border: 'none', borderRadius: 6 }}>Aplicar</button>
+                    </div>
+                  </div>
+                )}
+                {strokePickerOpen && (
+                  <div style={{ position: 'absolute', right: 0, marginTop: 8, background: '#fff', border: '1px solid #e2e8f0', padding: 8, borderRadius: 8, boxShadow: '0 6px 24px rgba(15,23,42,0.12)', zIndex: 40 }}>
+                    {/* Preview mostrando a cor+espessura da borda selecionada */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                      <div style={{ width: 40, height: 24, borderRadius: 4, border: `${selectedStrokeWidth}px solid ${selectedStrokeColor}`, background: 'transparent' }} aria-hidden />
+                      <div style={{ fontSize: 12, color: '#475569' }}>{selectedStrokeColor} • {selectedStrokeWidth}px</div>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                      <label style={{ fontSize: 12, color: '#374151', minWidth: 30 }}>Cor:</label>
+                      <input type="color" value={selectedStrokeColor} onChange={(e) => setSelectedStrokeColor(e.target.value)} style={{ width: 120, height: 28, border: 'none', borderRadius: 4 }} />
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                      <label style={{ fontSize: 12, color: '#374151', minWidth: 30 }}>Espessura:</label>
+                      <input type="range" min={1} max={10} step={1} value={selectedStrokeWidth} onChange={(e) => setSelectedStrokeWidth(Number(e.target.value))} />
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 8 }}>
+                      <button onClick={applyStrokeToAll} style={{ padding: '6px 10px', background: '#059669', color: '#fff', border: 'none', borderRadius: 6 }}>Todos</button>
+                      <button onClick={() => setStrokePickerOpen(false)} style={{ padding: '6px 10px' }}>Cancelar</button>
+                      <button onClick={applyStrokeToSelected} style={{ padding: '6px 10px', background: '#0ea5e9', color: '#fff', border: 'none', borderRadius: 6 }}>Aplicar</button>
+                    </div>
+                  </div>
+                )}
+                {textPickerOpen && (
+                  <div style={{ position: 'absolute', right: 0, marginTop: 8, background: '#fff', border: '1px solid #e2e8f0', padding: 8, borderRadius: 8, boxShadow: '0 6px 24px rgba(15,23,42,0.12)', zIndex: 40, minWidth: 250 }}>
+                    <div style={{ marginBottom: 8 }}>
+                      <label style={{ fontSize: 12, color: '#374151', display: 'block', marginBottom: 4 }}>Texto para o polígono:</label>
+                      <input
+                        type="text"
+                        value={textInput}
+                        onChange={(e) => setTextInput(e.target.value)}
+                        placeholder="Digite o texto aqui..."
+                        style={{ 
+                          width: '100%', 
+                          padding: '6px 8px', 
+                          border: '1px solid #d1d5db', 
+                          borderRadius: 4, 
+                          fontSize: 12,
+                          boxSizing: 'border-box'
+                        }}
+                        onKeyPress={(e) => {
+                          if (e.key === 'Enter' && textInput.trim()) {
+                            addTextToSelected();
+                          }
+                        }}
+                      />
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                      <button 
+                        onClick={removeTextFromSelected} 
+                        style={{ 
+                          padding: '6px 10px', 
+                          background: '#ef4444', 
+                          color: '#fff', 
+                          border: 'none', 
+                          borderRadius: 6,
+                          fontSize: 12
+                        }}
+                      >
+                        Remover
+                      </button>
+                      <button 
+                        onClick={() => setTextPickerOpen(false)} 
+                        style={{ 
+                          padding: '6px 10px',
+                          background: '#f3f4f6',
+                          color: '#374151',
+                          border: 'none',
+                          borderRadius: 6,
+                          fontSize: 12
+                        }}
+                      >
+                        Cancelar
+                      </button>
+                      <button 
+                        onClick={addTextToSelected} 
+                        disabled={!textInput.trim()}
+                        style={{ 
+                          padding: '6px 10px', 
+                          background: textInput.trim() ? '#0ea5e9' : '#d1d5db', 
+                          color: textInput.trim() ? '#fff' : '#9ca3af', 
+                          border: 'none', 
+                          borderRadius: 6,
+                          cursor: textInput.trim() ? 'pointer' : 'not-allowed',
+                          fontSize: 12
+                        }}
+                      >
+                        Adicionar
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </ToolGroup>
           </Toolbar>
+
+          {/* InfoChip movido para o canto inferior direito do mapa (fora da toolbar) */}
+          {lastImportedFile && (
+            <InfoChip>
+              Arquivo: {lastImportedFile} | Polígonos: <strong>{polygonCount}</strong>
+            </InfoChip>
+          )}
         </MapWrapper>
       </AppShell>
     </>

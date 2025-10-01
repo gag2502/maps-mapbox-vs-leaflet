@@ -14,9 +14,10 @@ const drawTheme: MapboxStyle[] = [
     type: 'fill',
     filter: ['all', ['==', '$type', 'Polygon']],
     paint: {
-      // Cor de preenchimento: laranja se ativo, azul se inativo
-      'fill-color': ['case', ['==', ['get', 'active'], 'true'], orange, blue],
-      'fill-opacity': 0.1, // Transparência do preenchimento
+      // Usa propriedade 'fillColor' do feature quando disponível, caso contrário branco
+      'fill-color': ['coalesce', ['get', 'fillColor'], '#ffffff'],
+      // Usa propriedade 'fillOpacity' do feature quando disponível, caso contrário 0.2
+      'fill-opacity': ['coalesce', ['get', 'fillOpacity'], 0.2],
     },
   },
   {
@@ -29,8 +30,8 @@ const drawTheme: MapboxStyle[] = [
       'line-join': 'round', // Junções arredondadas
     },
     paint: {
-      // Cor da linha: laranja se ativo, azul se inativo
-      'line-color': ['case', ['==', ['get', 'active'], 'true'], orange, blue],
+      // Cor da linha: sempre branca para bordas
+      'line-color': '#ffffff',
       // Tracejado: diferente para ativo/inativo
       'line-dasharray': ['case', ['==', ['get', 'active'], 'true'], ['literal', [0.2, 2]], ['literal', [2, 0]]],
       'line-width': 2, // Espessura da linha
