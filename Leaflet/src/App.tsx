@@ -44,30 +44,31 @@ const MapWrapper = styled.section`
 `;
 
 
-// Barra de ferramentas flutuante
+// Barra de ferramentas flutuante (estilo Mapbox)
 const Toolbar = styled.div`
   position: absolute;
   top: 24px;
   right: 24px;
   display: flex;
-  flex-direction: column;
-  gap: 12px;
-  z-index: 10;
+        flex-direction: column;
+        gap: 14px;
+  z-index: 25;
   align-items: flex-end;
 `;
 
-// Agrupamento de botões na barra de ferramentas
+// Agrupamento de botões na barra de ferramentas (estilo Mapbox)
 const ToolGroup = styled.div`
-  background: #fff;
+  background: transparent;
   border-radius: 8px;
-  box-shadow: 0 2px 8px rgba(15,23,42,0.15);
-  border: 1px solid #e2e8f0;
+  box-shadow: none;
+  border: none;
   display: flex;
-  align-items: center;
-  overflow: hidden;
+  align-items: stretch;
+  overflow: visible;
+  margin: 0;
 `;
 
-// Botão de ícone estilizado
+// Botão de ícone estilizado (estilo Mapbox)
 const IconButton = styled.button`
   appearance: none;
   background: #fff;
@@ -76,16 +77,26 @@ const IconButton = styled.button`
   width: 36px;
   height: 36px;
   cursor: pointer;
-  display: inline-flex;
+  display: flex;
   align-items: center;
   justify-content: center;
   font-size: 16px;
   line-height: 1;
+  box-sizing: border-box;
+  padding: 0;
   &:first-child { border-left: none; }
   &:hover { background: #f8fafc; }
+  & > div {
+    margin: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 20px;
+    width: 20px;
+  }
 `;
 
-// Chip de informação (exibe nome do arquivo e contagem de polígonos)
+// Chip de informação (canto inferior direito, igual Mapbox)
 const InfoChip = styled.div`
   background: #fff;
   border: 1px solid #e2e8f0;
@@ -95,7 +106,10 @@ const InfoChip = styled.div`
   font-size: 12px;
   color: #475569;
   max-width: 60vw;
-  align-self: flex-end;
+        position: fixed;
+        right: 24px;
+        bottom: 24px;
+  z-index: 22;
 `;
 
 // Tela de carregamento do mapa
@@ -211,6 +225,18 @@ function App() {
   };
   // Limpa os polígonos desenhados
   const handleClear = () => mapRef.current?.deleteSelected?.();
+
+  // Estado para o seletor de cor do polígono
+  const [colorPickerOpen, setColorPickerOpen] = useState(false);
+  const [selectedColor, setSelectedColor] = useState('#ffffff');
+  const [selectedOpacity, setSelectedOpacity] = useState(0.4);
+  // Estado para o seletor de borda
+  const [strokePickerOpen, setStrokePickerOpen] = useState(false);
+  const [selectedStrokeColor, setSelectedStrokeColor] = useState('#222222');
+  const [selectedStrokeWidth, setSelectedStrokeWidth] = useState(2);
+  // Estado para o seletor de texto
+  const [textPickerOpen, setTextPickerOpen] = useState(false);
+  const [textInput, setTextInput] = useState('');
 
   // Exporta o GeoJSON desenhado para um arquivo .geojson baixado pelo usuário
   // Esta função é chamada ao clicar no botão de exportar
@@ -333,6 +359,126 @@ function App() {
                 <IconImport />
                 <input type="file" accept=".json,.geojson,application/geo+json" onChange={handleFileUpload} style={{ display: 'none' }} />
               </IconButton>
+            </ToolGroup>
+            {/* Grupo: Cor, Borda, Texto */}
+            <ToolGroup style={{ overflow: 'visible' }}>
+              {/* Botão de cor de preenchimento (sem div extra) */}
+              <div style={{ position: 'relative' }}>
+                <IconButton
+                  aria-label="Cor do polígono"
+                  title="Cor do polígono"
+                  onClick={() => setColorPickerOpen(v => !v)}
+                >
+                  <span style={{
+                    display: 'block',
+                    width: 18,
+                    height: 18,
+                    background: selectedColor,
+                    borderRadius: 4,
+                    border: '1.5px solid #e2e8f0',
+                    boxShadow: 'inset 0 0 0 1px rgba(0,0,0,0.06)'
+                  }} />
+                </IconButton>
+                {colorPickerOpen && (
+                  <div style={{
+                    position: 'absolute',
+                    right: 0,
+                    top: '110%',
+                    background: '#fff',
+                    border: '1.5px solid #e2e8f0',
+                    padding: 10,
+                    borderRadius: 10,
+                    boxShadow: '0 6px 24px rgba(15,23,42,0.18)',
+                    zIndex: 10001,
+                    margin: 0,
+                    minWidth: 220,
+                    filter: 'none',
+                  }}>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+                      <input type="color" value={selectedColor} onChange={(e) => setSelectedColor(e.target.value)} />
+                      <div style={{ fontSize: 12, color: '#475569' }}>{selectedColor} • Opacidade: {Math.round(selectedOpacity * 100)}%</div>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                      <label style={{ fontSize: 12, color: '#374151' }}>Opacidade</label>
+                      <input type="range" min={0} max={1} step={0.05} value={selectedOpacity} onChange={(e) => setSelectedOpacity(Number(e.target.value))} />
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                      <button onClick={() => { try { mapRef.current?.applyFillToAll?.(selectedColor, selectedOpacity); } catch (err) { console.error(err); alert('Erro ao aplicar cor a todos'); } setColorPickerOpen(false); }} style={{ padding: '6px 10px', background: '#059669', color: '#fff', border: 'none', borderRadius: 6 }}>Todos</button>
+                      <button onClick={() => setColorPickerOpen(false)} style={{ padding: '6px 10px' }}>Cancelar</button>
+                      <button onClick={() => { try { mapRef.current?.changeSelectedFill?.(selectedColor, selectedOpacity); } catch (err) { console.error(err); alert('Erro ao aplicar cor'); } setColorPickerOpen(false); }} style={{ padding: '6px 10px', background: '#0ea5e9', color: '#fff', border: 'none', borderRadius: 6 }}>Aplicar</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+              {/* Botão de cor da borda */}
+              <div style={{ position: 'relative' }}>
+                <IconButton aria-label="Cor da borda" title="Cor da borda" onClick={() => setStrokePickerOpen(v => !v)}>
+                  {/* Ícone círculo com borda */}
+                  <svg width="18" height="18" viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="7" stroke={selectedStrokeColor} strokeWidth={selectedStrokeWidth} fill="none"/></svg>
+                </IconButton>
+                {strokePickerOpen && (
+                  <div style={{
+                    position: 'absolute',
+                    right: 0,
+                    top: '110%',
+                    background: '#fff',
+                    border: '1.5px solid #e2e8f0',
+                    padding: 10,
+                    borderRadius: 10,
+                    boxShadow: '0 6px 24px rgba(15,23,42,0.18)',
+                    zIndex: 10001,
+                    margin: 0,
+                    minWidth: 220,
+                    filter: 'none',
+                  }}>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+                      <input type="color" value={selectedStrokeColor} onChange={(e) => setSelectedStrokeColor(e.target.value)} />
+                      <div style={{ fontSize: 12, color: '#475569' }}>{selectedStrokeColor}</div>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                      <label style={{ fontSize: 12, color: '#374151' }}>Espessura</label>
+                      <input type="range" min={1} max={8} step={1} value={selectedStrokeWidth} onChange={(e) => setSelectedStrokeWidth(Number(e.target.value))} />
+                      <span style={{ fontSize: 12 }}>{selectedStrokeWidth}px</span>
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                      <button onClick={() => { try { mapRef.current?.applyStrokeToAll?.(selectedStrokeColor, selectedStrokeWidth); } catch (err) { console.error(err); alert('Erro ao aplicar borda a todos'); } setStrokePickerOpen(false); }} style={{ padding: '6px 10px', background: '#059669', color: '#fff', border: 'none', borderRadius: 6 }}>Todos</button>
+                      <button onClick={() => setStrokePickerOpen(false)} style={{ padding: '6px 10px' }}>Cancelar</button>
+                      <button onClick={() => { try { mapRef.current?.changeSelectedStroke?.(selectedStrokeColor, selectedStrokeWidth); } catch (err) { console.error(err); alert('Erro ao aplicar borda'); } setStrokePickerOpen(false); }} style={{ padding: '6px 10px', background: '#0ea5e9', color: '#fff', border: 'none', borderRadius: 6 }}>Aplicar</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+              {/* Botão de texto central */}
+              <div style={{ position: 'relative' }}>
+                <IconButton aria-label="Texto no polígono" title="Texto no polígono" onClick={() => setTextPickerOpen(v => !v)}>
+                  {/* Ícone texto */}
+                  <svg width="18" height="18" viewBox="0 0 20 20" fill="none"><text x="4" y="15" fontSize="13" fontFamily="Arial" fill="#222">T</text></svg>
+                </IconButton>
+                {textPickerOpen && (
+                  <div style={{
+                    position: 'absolute',
+                    right: 0,
+                    top: '110%',
+                    background: '#fff',
+                    border: '1.5px solid #e2e8f0',
+                    padding: 10,
+                    borderRadius: 10,
+                    boxShadow: '0 6px 24px rgba(15,23,42,0.18)',
+                    zIndex: 10001,
+                    margin: 0,
+                    minWidth: 220,
+                    filter: 'none',
+                  }}>
+                    <div style={{ marginBottom: 8 }}>
+                      <input type="text" value={textInput} onChange={e => setTextInput(e.target.value)} placeholder="Texto do polígono" style={{ width: '100%', padding: 6, fontSize: 14, borderRadius: 4, border: '1px solid #e2e8f0' }} />
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                      <button onClick={() => setTextPickerOpen(false)} style={{ padding: '6px 10px' }}>Cancelar</button>
+                      <button onClick={() => { try { mapRef.current?.addTextToSelected?.(textInput); } catch (err) { console.error(err); alert('Erro ao adicionar texto'); } setTextPickerOpen(false); }} style={{ padding: '6px 10px', background: '#0ea5e9', color: '#fff', border: 'none', borderRadius: 6 }}>Aplicar</button>
+                    </div>
+                  </div>
+                )}
+              </div>
             </ToolGroup>
             {/* Botão para exportar GeoJSON */}
             <ToolGroup>

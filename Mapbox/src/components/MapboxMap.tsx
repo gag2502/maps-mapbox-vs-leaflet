@@ -1180,7 +1180,7 @@ const MapboxMap = forwardRef(function MapboxMap(
             type: 'Feature' as const,
             id: `text-${f.id}`,
             properties: {
-              labelText: f.properties.labelText,
+              labelText: f.properties?.labelText,
               originalId: f.id
             },
             geometry: {
